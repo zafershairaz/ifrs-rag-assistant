@@ -14,17 +14,48 @@ OUTPUT_FILE = "data/processed/embeddings.npy"
 def load_chunks(file_path):
     """Load chunks from JSON."""
 
-    with open(file_path, "r", encoding="utf-8") as file:
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"Chunks file not found: {file_path}"
+        )
+
+    with open(
+        file_path,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
         return json.load(file)
 
 
-def create_embeddings(chunks):
-    """Create embeddings for all text chunks."""
+def prepare_text_for_embedding(chunk):
+    """
+    Create contextual text for embedding.
 
-    model = SentenceTransformer(MODEL_NAME)
+    Metadata is included so the embedding model
+    understands the source context.
+    """
+
+    return (
+        f"Standard: {chunk['standard']}\n"
+        f"Paragraph: {chunk['paragraph']}\n"
+        f"Text: {chunk['text']}"
+    )
+
+
+def create_embeddings(chunks):
+    """
+    Create embeddings for all document chunks.
+    """
+
+    model = SentenceTransformer(
+        MODEL_NAME
+    )
 
     texts = [
-        chunk["text"]
+        prepare_text_for_embedding(chunk)
         for chunk in chunks
     ]
 
@@ -40,19 +71,39 @@ if __name__ == "__main__":
 
     print("Loading chunks...")
 
-    chunks = load_chunks(INPUT_FILE)
+    chunks = load_chunks(
+        INPUT_FILE
+    )
 
-    print(f"Chunks loaded: {len(chunks)}")
+    print(
+        f"Chunks loaded: {len(chunks)}"
+    )
 
-    print("Creating embeddings...")
+    print(
+        "Preparing text for embeddings..."
+    )
 
-    embeddings = create_embeddings(chunks)
+    print(
+        "Creating embeddings..."
+    )
+
+    embeddings = create_embeddings(
+        chunks
+    )
 
     np.save(
         OUTPUT_FILE,
         embeddings
     )
 
-    print("Embedding creation completed.")
-    print(f"Embedding shape: {embeddings.shape}")
-    print(f"Saved to: {OUTPUT_FILE}")
+    print(
+        "Embedding creation completed."
+    )
+
+    print(
+        f"Embedding shape: {embeddings.shape}"
+    )
+
+    print(
+        f"Saved to: {OUTPUT_FILE}"
+    )
