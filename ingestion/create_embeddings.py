@@ -41,7 +41,7 @@ def prepare_text_for_embedding(chunk):
     return (
         f"Standard: {chunk['standard']}\n"
         f"Paragraph: {chunk['paragraph']}\n"
-        f"Text: {chunk['text']}"
+        f" {chunk['text']}"
     )
 
 

@@ -2,10 +2,11 @@ import re
 import json
 from pathlib import Path
 
+PROCESSED_FOLDER = Path("data/processed")
+OUTPUT_FILE = PROCESSED_FOLDER / "chunks.json"
+
 
 def load_text(file_path):
-    """Load cleaned text from a file."""
-
     file_path = Path(file_path)
 
     if not file_path.exists():
@@ -18,71 +19,71 @@ def load_text(file_path):
     )
 
 
-def extract_standard_name(text):
+def extract_standard_from_filename(file_path):
     """
-    Extract the primary IAS/IFRS standard from the
-    beginning/title section of the document.
+    Extract the IFRS/IAS standard from the filename.
 
-    The function intentionally searches only the
-    beginning of the document so references to other
-    standards later in the document are ignored.
+    Examples:
+
+    ifrs-15-revenue-from-contracts-with-customers
+        -> IFRS 15
+
+    ifrs-9-financial-instruments
+        -> IFRS 9
+
+    ias-16-property-plant-and-equipment
+        -> IAS 16
     """
 
-    # Search only the beginning of the document.
-    header_text = text[:15000]
+    filename = Path(file_path).stem.lower()
 
-    patterns = [
+    match = re.match(
+        r"^(ifrs|ias)[_\-\s]*(\d{1,3})(?:[_\-\s].*)?$",
+        filename
+    )
 
-        # Example:
-        # INTERNATIONAL FINANCIAL REPORTING STANDARD
-        # 15 REVENUE FROM CONTRACTS WITH CUSTOMERS
-        r"INTERNATIONAL\s+FINANCIAL\s+REPORTING\s+STANDARD"
-        r"\s+(\d{1,3})",
+    if not match:
+        return "Unknown"
 
-        # Example:
-        # International Financial Reporting Standard 15
-        r"International\s+Financial\s+Reporting\s+Standard"
-        r"\s+(\d{1,3})",
+    standard_type = match.group(1).upper()
+    standard_number = match.group(2)
 
-        # Example:
-        # (IFRS 15)
-        r"\(\s*(IFRS\s+\d{1,3})\s*\)",
-
-        # Example:
-        # IFRS 15 Revenue from Contracts with Customers
-        r"\b(IFRS\s+\d{1,3})\b"
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            header_text,
-            re.IGNORECASE
-        )
-
-        if match:
-
-            value = match.group(1)
-
-            # First two patterns capture only
-            # the standard number.
-            if value.isdigit():
-
-                return f"IFRS {value}"
-
-            return value.upper()
-
-    return "Unknown"
+    return f"{standard_type} {standard_number}"
 
 
 def create_chunks(text, standard_name):
     """
-    Split accounting standard text into
-    paragraph-based chunks.
+    Create chunks based on IFRS/IAS paragraph numbers.
+
+    Handles formats such as:
+
+        12
+        An entity shall...
+
+    and:
+
+        12 An entity shall...
+
+    The paragraph number becomes the chunk identifier.
     """
 
-    pattern = r"(?m)^\s*(\d{1,3})\s+"
+    # ---------------------------------------------------------
+    # Find paragraph numbers
+    # ---------------------------------------------------------
+    #
+    # We look for a number at the beginning of a line.
+    #
+    # Example:
+    #
+    # 12
+    # An entity shall...
+    #
+    # or
+    #
+    # 12 An entity shall...
+    #
+
+    pattern = r"(?m)^[ \t]*(\d{1,3})(?=[ \t]*\n|[ \t]+)"
 
     matches = list(
         re.finditer(pattern, text)
@@ -97,45 +98,114 @@ def create_chunks(text, standard_name):
         start = match.start()
 
         if index + 1 < len(matches):
-
             end = matches[index + 1].start()
-
         else:
-
             end = len(text)
 
-        chunk_text = text[
-            start:end
-        ].strip()
+        chunk_text = text[start:end].strip()
 
-        if len(chunk_text) < 30:
+        # -----------------------------------------------------
+        # Clean excessive whitespace
+        # -----------------------------------------------------
+
+        chunk_text = re.sub(
+            r"\n{3,}",
+            "\n\n",
+            chunk_text
+        )
+
+        chunk_text = re.sub(
+            r"[ \t]+",
+            " ",
+            chunk_text
+        )
+
+        chunk_text = chunk_text.strip()
+
+        # -----------------------------------------------------
+        # Ignore very small chunks
+        # -----------------------------------------------------
+
+        if len(chunk_text) < 50:
             continue
 
-        chunks.append({
-
-            "standard": standard_name,
-
-            "paragraph": paragraph_number,
-
-            "text": chunk_text
-
-        })
+        chunks.append(
+            {
+                "standard": standard_name,
+                "paragraph": paragraph_number,
+                "text": chunk_text
+            }
+        )
 
     return chunks
 
 
-def save_chunks(chunks, output_file):
-    """Save chunks as JSON."""
+def process_all_documents():
 
-    output_file = Path(output_file)
+    cleaned_files = sorted(
+        PROCESSED_FOLDER.glob("*_cleaned.txt")
+    )
 
-    output_file.parent.mkdir(
+    if not cleaned_files:
+        raise FileNotFoundError(
+            "No cleaned documents found."
+        )
+
+    print(
+        f"Found {len(cleaned_files)} "
+        f"cleaned document(s)."
+    )
+
+    all_chunks = []
+
+    for cleaned_file in cleaned_files:
+
+        print(
+            f"\nProcessing: {cleaned_file.name}"
+        )
+
+        text = load_text(cleaned_file)
+
+        standard_name = (
+            extract_standard_from_filename(
+                cleaned_file
+            )
+        )
+
+        print(
+            f"Detected standard: {standard_name}"
+        )
+
+        if standard_name == "Unknown":
+
+            print(
+                "WARNING: Standard could not "
+                f"be detected from {cleaned_file.name}"
+            )
+
+        chunks = create_chunks(
+            text,
+            standard_name
+        )
+
+        print(
+            f"Chunks created: {len(chunks)}"
+        )
+
+        all_chunks.extend(chunks)
+
+    return all_chunks
+
+
+def save_chunks(chunks):
+
+    PROCESSED_FOLDER.mkdir(
         parents=True,
         exist_ok=True
     )
 
     with open(
-        output_file,
+        OUTPUT_FILE,
         "w",
         encoding="utf-8"
     ) as file:
@@ -150,46 +220,16 @@ def save_chunks(chunks, output_file):
 
 if __name__ == "__main__":
 
-    input_file = (
-        "data/processed/cleaned_text.txt"
-    )
+    chunks = process_all_documents()
 
-    output_file = (
-        "data/processed/chunks.json"
-    )
+    save_chunks(chunks)
 
-    text = load_text(
-        input_file
-    )
+    print("\nChunking completed.")
 
-    # Automatically identify the primary
-    # standard from the document title/header.
-    standard_name = extract_standard_name(
-        text
+    print(
+        f"Total chunks: {len(chunks)}"
     )
 
     print(
-        f"Detected standard: {standard_name}"
-    )
-
-    chunks = create_chunks(
-        text,
-        standard_name
-    )
-
-    save_chunks(
-        chunks,
-        output_file
-    )
-
-    print(
-        "Chunking completed."
-    )
-
-    print(
-        f"Number of chunks: {len(chunks)}"
-    )
-
-    print(
-        f"Saved to: {output_file}"
+        f"Saved to: {OUTPUT_FILE}"
     )

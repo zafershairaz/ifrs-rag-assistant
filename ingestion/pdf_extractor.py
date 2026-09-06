@@ -1,13 +1,14 @@
-import fitz
+import pymupdf
 from pathlib import Path
 
+RAW_FOLDER = Path("data/raw")
+OUTPUT_FOLDER = Path("data/processed")
 
-def extract_text_from_pdf(pdf_path):
+
+def extract_pdf_blocks(pdf_path):
     """
-    Extract text from every page of a PDF.
-
-    Returns:
-        str: Complete extracted text.
+    Extract text blocks together with their coordinates from a PDF.
+    This preserves layout information needed for paragraph detection.
     """
 
     pdf_path = Path(pdf_path)
@@ -15,40 +16,89 @@ def extract_text_from_pdf(pdf_path):
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    document = fitz.open(pdf_path)
+    document = pymupdf.open(pdf_path)
 
-    all_text = []
+    pages = []
 
     for page_number, page in enumerate(document, start=1):
-        text = page.get_text()
 
-        if text.strip():
-            all_text.append(
-                f"\n--- PAGE {page_number} ---\n{text}"
-            )
+        blocks = page.get_text("blocks")
+
+        page_blocks = []
+
+        for block in blocks:
+
+            x0, y0, x1, y1, text, *_ = block
+
+            text = text.strip()
+
+            if not text:
+                continue
+
+            page_blocks.append({
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "text": text
+            })
+
+        pages.append({
+            "page": page_number,
+            "blocks": page_blocks
+        })
 
     document.close()
 
-    return "\n".join(all_text)
+    return pages
+
+
+def extract_all_pdfs():
+
+    RAW_FOLDER.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+
+    pdf_files = sorted(RAW_FOLDER.glob("*.pdf"))
+
+    if not pdf_files:
+        raise FileNotFoundError(
+            "No PDF files found in data/raw/"
+        )
+
+    print(f"Found {len(pdf_files)} PDF file(s).")
+
+    for pdf_file in pdf_files:
+
+        print(f"\nProcessing: {pdf_file.name}")
+
+        pages = extract_pdf_blocks(pdf_file)
+
+        output_file = (
+            OUTPUT_FOLDER /
+            f"{pdf_file.stem}_blocks.json"
+        )
+
+        import json
+
+        with open(
+            output_file,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            json.dump(
+                pages,
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        print(f"Saved: {output_file}")
+        print(f"Pages: {len(pages)}")
 
 
 if __name__ == "__main__":
 
-    pdf_file = "data/raw/sample.pdf"
+    extract_all_pdfs()
 
-    try:
-        extracted_text = extract_text_from_pdf(pdf_file)
-
-        output_file = Path("data/processed/extracted_text.txt")
-
-        output_file.write_text(
-            extracted_text,
-            encoding="utf-8"
-        )
-
-        print("PDF extraction completed successfully.")
-        print(f"Output saved to: {output_file}")
-        print(f"Characters extracted: {len(extracted_text):,}")
-
-    except FileNotFoundError as error:
-        print(error)
+    print("\nPDF block extraction completed successfully.")

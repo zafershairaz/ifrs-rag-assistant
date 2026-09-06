@@ -1,16 +1,23 @@
+import time
+
 import ollama
 
-from vectorstore.search import search
+from vectorstore.search import (
+    search,
+    detect_standard
+)
 
 
 MODEL_NAME = "qwen3:8b"
 
+DEFAULT_TOP_K = 5
+
+
+# =========================================================
+# Build context
+# =========================================================
 
 def build_context(results):
-    """
-    Convert retrieved search results into
-    structured context for the LLM.
-    """
 
     context_parts = []
 
@@ -19,148 +26,237 @@ def build_context(results):
         start=1
     ):
 
-        source = (
-            f"{result['standard']} "
-            f"paragraph {result['paragraph']}"
-        )
-
         context_parts.append(
             f"""
 SOURCE {number}
------------
+
 Standard: {result['standard']}
 Paragraph: {result['paragraph']}
-Similarity score: {result['score']:.4f}
+Section: {result.get('section', 'General')}
 
-Text:
 {result['text']}
 """
         )
 
-    return "\n".join(context_parts)
+    return "\n".join(
+        context_parts
+    )
 
+
+# =========================================================
+# Build Qwen prompt
+# =========================================================
 
 def build_prompt(question, context):
-    """
-    Build a strict grounded RAG prompt.
-    """
 
     return f"""
-You are an IFRS and IAS accounting
-research assistant.
+You are an IFRS and IAS accounting research assistant.
 
-Your job is to answer the user's question
-using ONLY the retrieved source material
-provided below.
+Your task is to answer the user's accounting question using ONLY
+the IFRS/IAS source material provided below.
 
-USER QUESTION
-=============
-
+USER QUESTION:
 {question}
 
-
-RETRIEVED SOURCE MATERIAL
-=========================
-
+SOURCE MATERIAL:
 {context}
 
+IMPORTANT RULES:
 
-INSTRUCTIONS
-============
+1. Use ONLY the supplied IFRS/IAS source material.
 
-1. Use only the retrieved source material.
+2. Do not rely on your general accounting knowledge.
 
-2. Do not use your own knowledge to introduce
-   accounting requirements that are not contained
-   in the retrieved material.
+3. Do not invent, assume, or reconstruct requirements that are not
+supported by the supplied source material.
 
-3. Do not invent IFRS or IAS paragraph numbers.
+4. Do not invent paragraph numbers.
 
-4. Cite the relevant standard and paragraph
-   number when the information is available.
+5. Do not cite a paragraph unless that paragraph is present in the
+supplied source material.
 
-5. Clearly distinguish between:
-   - what the source states
-   - your explanation of the source
+6. If several supplied paragraphs are relevant, synthesize them
+into one coherent answer.
 
-6. If the retrieved material does not provide
-   enough information to answer the question,
-   say:
+7. Distinguish clearly between requirements stated in the source
+material and explanatory comments.
 
-   "The retrieved IFRS/IAS material does not
-   contain enough information to answer this
-   question reliably."
+8. Cite the relevant IFRS/IAS standard and paragraph number(s).
 
-7. Do not pretend that an unsupported answer
-   is authoritative.
+9. When the question asks for a comparison, explain the distinction
+using the supplied source material.
 
-8. Keep the answer professional and suitable
-   for an accounting student or professional.
+10. When the question asks for a process, model, criteria, or
+multiple steps, present the answer in a structured numbered list
+if the supplied source material supports that structure.
 
-9. Do not present the response as a substitute
-   for professional accounting judgment.
+11. If the retrieved material does not contain enough information
+to answer the question reliably, state exactly:
 
-10. Do not cite a source that was not included
-    in the retrieved source material.
+"The retrieved IFRS/IAS material does not contain enough information
+to answer this question reliably."
 
+12. Keep the answer concise, technically accurate, and professional.
 
-ANSWER
-======
+13. Do not mention the retrieval process, embeddings, FAISS,
+TF-IDF, vector search, reranking, or the RAG system.
 
-Provide:
+ANSWER FORMAT:
 
-- A direct answer
-- A short explanation
-- Relevant IFRS/IAS paragraph references
-- A brief source list
+Answer:
+[Direct answer to the user's question]
+
+Explanation:
+[Brief explanation based only on the supplied source material]
+
+References:
+[Relevant standard and paragraph number(s)]
 """
 
 
-def ask_question(question, top_k=5):
-    """
-    Complete RAG pipeline:
+# =========================================================
+# Ask Qwen
+# =========================================================
 
-    Question
-       ↓
-    FAISS retrieval
-       ↓
-    Context construction
-       ↓
-    Qwen3
-       ↓
-    Grounded answer
-    """
+def ask_qwen(prompt):
+    response = ollama.chat(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        think=False,
+        options={
+            "temperature": 0,
+            "num_predict": 800
+        }
+    )
+    return response["message"]["content"]
+
+
+# =========================================================
+# Ask question
+# =========================================================
+
+def ask_question(
+    question,
+    top_k=DEFAULT_TOP_K
+):
 
     if not question or not question.strip():
 
         return {
+            "question": question,
             "answer": "Please enter an accounting question.",
             "sources": []
         }
 
-    print(
-        "\nSearching IFRS/IAS documents..."
+    question = question.strip()
+
+    total_start = time.perf_counter()
+
+    # -----------------------------------------------------
+    # Detect standard
+    # -----------------------------------------------------
+
+    requested_standard = detect_standard(
+        question
     )
+
+    if requested_standard:
+
+        print(
+            f"Detected standard: "
+            f"{requested_standard}"
+        )
+
+    else:
+
+        print(
+            "No specific IAS/IFRS standard detected. "
+            "Searching across all standards."
+        )
+
+    # -----------------------------------------------------
+    # Retrieval
+    # -----------------------------------------------------
+
+    search_start = time.perf_counter()
 
     results = search(
         question,
-        top_k=top_k
+        top_k=top_k,
+        standard=requested_standard
     )
+
+    search_time = (
+        time.perf_counter()
+        - search_start
+    )
+
+    print(
+        f"Hybrid retrieval time: "
+        f"{search_time:.2f} seconds"
+    )
+
+    # -----------------------------------------------------
+    # No results
+    # -----------------------------------------------------
 
     if not results:
 
+        total_time = (
+            time.perf_counter()
+            - total_start
+        )
+
+        print(
+            f"Total RAG time: "
+            f"{total_time:.2f} seconds"
+        )
+
         return {
+            "question": question,
             "answer": (
-                "No relevant IFRS/IAS material "
-                "was retrieved."
+                "No sufficiently relevant "
+                "IFRS/IAS material was retrieved "
+                "for this question."
             ),
             "sources": []
         }
 
+    # -----------------------------------------------------
+    # Print sources
+    # -----------------------------------------------------
+
     print(
-        f"Retrieved {len(results)} "
-        f"relevant paragraphs."
+        f"Using {len(results)} retrieved "
+        f"sources for Qwen."
     )
+
+    print(
+        "\nRetrieved sources:"
+    )
+
+    for number, result in enumerate(
+        results,
+        start=1
+    ):
+
+        print(
+            f"{number}. "
+            f"{result['standard']} "
+            f"paragraph "
+            f"{result['paragraph']} "
+            f"(score: "
+            f"{result['score']:.4f})"
+        )
+
+        print(
+            f"   Section: "
+            f"{result.get('section', 'General')}"
+        )
+
+    # -----------------------------------------------------
+    # Build context
+    # -----------------------------------------------------
 
     context = build_context(
         results
@@ -171,67 +267,98 @@ def ask_question(question, top_k=5):
         context
     )
 
+    # -----------------------------------------------------
+    # Qwen
+    # -----------------------------------------------------
+
     print(
-        "Sending retrieved context to Qwen..."
+        "\nSending retrieved context to Qwen..."
     )
 
-    response = ollama.chat(
+    llm_start = time.perf_counter()
 
-        model=MODEL_NAME,
-
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+    answer = ask_qwen(
+        prompt
     )
 
-    answer = (
-        response["message"]["content"]
+    llm_time = (
+        time.perf_counter()
+        - llm_start
     )
+
+    print(
+        f"Qwen response time: "
+        f"{llm_time:.2f} seconds"
+    )
+
+    # -----------------------------------------------------
+    # API sources
+    #
+    # IMPORTANT:
+    # section/text remain internal.
+    # The API only exposes standard, paragraph and score.
+    # -----------------------------------------------------
 
     sources = []
 
     for result in results:
 
-        sources.append({
+        sources.append(
+            {
+                "standard": result[
+                    "standard"
+                ],
+                "paragraph": result[
+                    "paragraph"
+                ],
+                "score": result[
+                    "score"
+                ]
+            }
+        )
 
-            "standard": result["standard"],
+    # -----------------------------------------------------
+    # Total time
+    # -----------------------------------------------------
 
-            "paragraph": result["paragraph"],
+    total_time = (
+        time.perf_counter()
+        - total_start
+    )
 
-            "score": result["score"]
-
-        })
+    print(
+        f"Total RAG time: "
+        f"{total_time:.2f} seconds"
+    )
 
     return {
-
+        "question": question,
         "answer": answer,
-
         "sources": sources
-
     }
 
+
+# =========================================================
+# CLI
+# =========================================================
 
 if __name__ == "__main__":
 
     question = input(
         "\nEnter your accounting question: "
-    )
+    ).strip()
 
     result = ask_question(
         question,
-        top_k=5
+        top_k=DEFAULT_TOP_K
     )
 
     print(
-        "\n" + "=" * 70
+        "\n"
+        + "=" * 70
     )
 
-    print(
-        "ANSWER"
-    )
+    print("ANSWER")
 
     print(
         "=" * 70
@@ -242,12 +369,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "\n" + "=" * 70
+        "\n"
+        + "=" * 70
     )
 
-    print(
-        "RETRIEVED SOURCES"
-    )
+    print("RETRIEVED SOURCES")
 
     print(
         "=" * 70
